@@ -17,6 +17,8 @@
 #include <linux/limits.h>
 #include <linux/types.h>
 #include <linux/unistd.h>
+#include <linux/uaccess.h>
+#include <linux/sched.h>
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -28,6 +30,13 @@
 
 #ifndef __user
 #define __user
+#endif
+
+/* Fallback for newfstatat syscall number */
+#ifndef __NR_newfstatat
+#ifdef __NR_fstatat64
+#define __NR_newfstatat __NR_fstatat64
+#endif
 #endif
 
 /* ------------------------------------------------------------------ */

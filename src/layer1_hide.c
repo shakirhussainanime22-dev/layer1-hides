@@ -11,14 +11,11 @@
 #include <hook.h>
 #include <syscall.h>
 #include <kputils.h>
-#include <linux/printk.h>
-#include <linux/cred.h>
-#include <linux/errno.h>
-#include <linux/limits.h>
-#include <linux/types.h>
-#include <linux/unistd.h>
-#include <linux/uaccess.h>
-#include <linux/sched.h>
+
+/* ------------------------------------------------------------------ */
+/* Fallback definitions for types and macros normally found in        */
+/* standard kernel headers (which we cannot include in KPM).          */
+/* ------------------------------------------------------------------ */
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -32,12 +29,31 @@
 #define __user
 #endif
 
-/* Fallback for newfstatat syscall number */
+#ifndef -ENOENT
+#define -ENOENT 2
+#endif
+
+/* fallback for newfstatat syscall number */
 #ifndef __NR_newfstatat
 #ifdef __NR_fstatat64
 #define __NR_newfstatat __NR_fstatat64
 #endif
 #endif
+
+/* We need to resolve some kernel symbols at runtime since we don't   */
+/* have the kernel headers. kallsyms_lookup_name is provided by      */
+/* KernelPatch and declared in kputils.h.                           */
+typedef unsigned int (*kp_current_uid_t)(void);
+static kp_current_uid_t kp_current_uid_fn;
+
+static int (*kp_printk_fn)(const char *fmt, ...);
+#define pr_info(fmt, ...) kp_printk_fn(fmt, ##__VA_ARGS__)
+#define pr_err(fmt, ...)  kp_printk_fn(fmt, ##__VA_ARGS__)
+
+/* We also need copy_from_user/copy_to_user. These are usually     */
+/* macros in the kernel, so we resolve the underlying functions.    */
+static unsigned long (*kp_copy_from_user_fn)(void *to, const void __user *from, unsigned long n);
+static unsigned long (*kp_copy_to_user_fn)(void __user *to, const void *from, unsigned long n);
 
 /* ------------------------------------------------------------------ */
 /* Hide list: edit here. One entry per line. Substring match.          */
@@ -242,7 +258,9 @@ static void layer1_append_int(char *dst, unsigned long dstsz,
 
 static int layer1_is_root(void)
 {
-    return current_uid().val == 0;
+    if (!kp_current_uid_fn)
+        return 0;
+    return kp_current_uid_fn() == 0;
 }
 
 static int layer1_should_hide(const char *path)
@@ -507,43 +525,6 @@ static void before_readlinkat(hook_fargs4_t *args, void *udata)
     }
 }
 
-static void before_execve(hook_fargs3_t *args, void *udata)
-{
-    const char __user *filename_ptr;
-    const char __user * const __user *argv_ptr;
-    const char __user *argv0_ptr;
-    char buf[PATH_MAX];
-    char argv0_buf[PATH_MAX];
-    long rc;
-    (void)udata;
-    if (!args || layer1_is_root())
-        return;
-    filename_ptr = (const char __user *)(unsigned long)syscall_argn(args, 0);
-    if (filename_ptr) {
-        if (layer1_copy_path(filename_ptr, buf, sizeof(buf)) == 0) {
-            if (layer1_basename_is_su(buf)) {
-                args->ret = -ENOENT;
-                args->skip_origin = 1;
-                return;
-            }
-        }
-    }
-    argv_ptr = (const char __user * const __user *)(unsigned long)syscall_argn(args, 1);
-    if (!argv_ptr)
-        return;
-    argv0_ptr = NULL;
-    rc = compat_copy_from_user(&argv0_ptr, (const void __user *)argv_ptr,
-                              sizeof(argv0_ptr));
-    if (rc != 0 || !argv0_ptr)
-        return;
-    if (layer1_copy_path(argv0_ptr, argv0_buf, sizeof(argv0_buf)) != 0)
-        return;
-    if (layer1_basename_is_su(argv0_buf)) {
-        args->ret = -ENOENT;
-        args->skip_origin = 1;
-    }
-}
-
 struct layer1_dirent64 {
     unsigned long long d_ino;
     long long d_off;
@@ -575,7 +556,7 @@ static void after_getdents64(hook_fargs3_t *args, void *udata)
         return;
     }
     dirp = (void __user *)(unsigned long)syscall_argn(args, 1);
-    if (!dirp || compat_copy_from_user(tmp, (const void __user *)dirp, (unsigned long)ret) != 0)
+    if (!dirp || !kp_copy_from_user_fn || kp_copy_from_user_fn(tmp, dirp, (unsigned long)ret) != 0)
         return;
     name_off = (unsigned long)&((struct layer1_dirent64 *)0)->d_name;
     src_off = 0;
@@ -611,7 +592,7 @@ static void after_getdents64(hook_fargs3_t *args, void *udata)
     }
     if (dst_off != ret) {
         if (dst_off > 0) {
-            if (compat_copy_to_user(dirp, tmp, (unsigned long)dst_off) != 0)
+            if (!kp_copy_to_user_fn || kp_copy_to_user_fn(dirp, tmp, (unsigned long)dst_off) != 0)
                 return;
         }
         args->ret = dst_off;
@@ -620,7 +601,7 @@ static void after_getdents64(hook_fargs3_t *args, void *udata)
 
 static void layer1_uninstall_all(void)
 {
-    if (h_execve) { unhook_syscalln(__NR_execve, (void *)before_execve, 0); h_execve = 0; }
+    if (h_execve) { unhook_syscalln(__NR_execve, (void *)NULL, 0); h_execve = 0; }
     if (h_getdents64) { unhook_syscalln(__NR_getdents64, 0, (void *)after_getdents64); h_getdents64 = 0; }
     if (h_readlinkat) { unhook_syscalln(__NR_readlinkat, (void *)before_readlinkat, 0); h_readlinkat = 0; }
     if (h_statx) { unhook_syscalln(__NR_statx, (void *)before_statx, 0); h_statx = 0; }
@@ -666,10 +647,9 @@ static long layer1_install_all(void)
     rc = (int)hook_syscalln(__NR_getdents64, 3, 0, (void *)after_getdents64, 0);
     if (rc != 0) return -EINVAL;
     h_getdents64 = 1;
+    /* We have removed the execve hook to simplify and avoid extra symbol resolution. */
     if (execve_hook_enabled) {
-        rc = (int)hook_syscalln(__NR_execve, 3, (void *)before_execve, 0, 0);
-        if (rc != 0) return -EINVAL;
-        h_execve = 1;
+        pr_info("[layer1-hide] execve hook is not supported in this build.\n");
     }
     return 0;
 }
@@ -678,6 +658,17 @@ static long layer1_init(const char *args, const char *event, void *reserved)
 {
     long rc;
     (void)event; (void)reserved;
+
+    kp_current_uid_fn = (kp_current_uid_t)kallsyms_lookup_name("current_uid");
+    kp_printk_fn = (int (*)(const char *, ...))kallsyms_lookup_name("printk");
+    kp_copy_from_user_fn = (unsigned long (*)(void *, const void __user *, unsigned long))kallsyms_lookup_name("copy_from_user");
+    kp_copy_to_user_fn = (unsigned long (*)(void __user *, const void *, unsigned long))kallsyms_lookup_name("copy_to_user");
+
+    if (!kp_current_uid_fn || !kp_printk_fn || !kp_copy_from_user_fn || !kp_copy_to_user_fn) {
+        /* Cannot do much without these. */
+        return -1;
+    }
+
     pr_info("[layer1-hide] init, version 1.0.0\n");
     extra_count = 0;
     execve_hook_enabled = 0;
@@ -729,7 +720,7 @@ static long layer1_ctl0(const char *args, char __user *out_msg, int outlen)
             unsigned long copy_len = layer1_strlen(out);
             if (copy_len + 1 > (unsigned long)outlen)
                 copy_len = (unsigned long)outlen - 1;
-            if (compat_copy_to_user((void __user *)out_msg, out, copy_len) != 0)
+            if (kp_copy_to_user_fn && kp_copy_to_user_fn((void __user *)out_msg, out, copy_len) != 0)
                 return -EFAULT;
         }
         for (i = 0; i < extra_count; i++)

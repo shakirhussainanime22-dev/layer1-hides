@@ -12,10 +12,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Toolchain
+      - name: Install Clang Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y git make clang lld llvm gcc-aarch64-linux-gnu
+          sudo apt-get install -y git make clang lld llvm
 
       - name: Clone KernelPatch
         run: |
@@ -23,10 +23,7 @@ jobs:
 
       - name: Build KPM
         run: |
-          export TARGET_COMPILE=aarch64-linux-gnu-
-          export CC=clang
-          export LD=ld.lld
-          make KP_DIR=${{ github.workspace }}/../KernelPatch TARGET_COMPILE=aarch64-linux-gnu- CC=clang LD=ld.lld
+          make KP_DIR=${{ github.workspace }}/../KernelPatch
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

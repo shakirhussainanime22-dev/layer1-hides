@@ -12,20 +12,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install toolchain
+      - name: Install Clang and Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git gcc-aarch64-linux-gnu
+          sudo apt-get install -y git make clang llvm lld
 
       - name: Clone KernelPatch
         run: |
           git clone --depth=1 --branch main https://github.com/bmax121/KernelPatch.git ../KernelPatch
-          ls ../KernelPatch/kernel/include/
 
-      - name: Build KPM
+      - name: Build KPM with Clang
         run: |
+          # Define the Clang toolchain prefix for cross-compilation
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=clang
+          export LD=ld.lld
           make TARGET_COMPILE=aarch64-linux-gnu- KP_DIR=${{ github.workspace }}/../KernelPatch
-          ls -lh layer1_hide.kpm layer1-hide.kpm
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

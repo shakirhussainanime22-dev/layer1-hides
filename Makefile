@@ -1,16 +1,11 @@
-# layer1-hide Makefile
-# Builds layer1_hide.kpm with no local PC needed, via GitHub Actions.
-# Usage:
-#   make KP_DIR=../KernelPatch TARGET_COMPILE=aarch64-linux-gnu-
-#   make clean
-
+# Clean Makefile for KernelPatch (Clang)
 KP_DIR ?= ../KernelPatch
 TARGET_COMPILE ?= aarch64-linux-gnu-
+CC := clang
+LD := ld.lld
 
-CC := $(TARGET_COMPILE)gcc
 SRC := src/layer1_hide.c
 OUT := layer1_hide.kpm
-OUT_ALIAS := layer1-hide.kpm
 
 INCLUDES := -I$(KP_DIR)/kernel/include \
 	-I$(KP_DIR)/kernel/patch/include \
@@ -26,20 +21,16 @@ CFLAGS := -O2 -Wall -Wextra \
 	-fno-strict-aliasing \
 	-fno-omit-frame-pointer \
 	-mgeneral-regs-only \
-	-march=armv8-a -mtune=generic
+	-target aarch64-linux-android
 
-all: $(OUT) $(OUT_ALIAS)
+all: $(OUT)
 
 $(OUT): $(SRC)
 	$(CC) $(CFLAGS) $(INCLUDES) -r -o $@ $<
-	@echo "[layer1-hide] built $@"
-
-$(OUT_ALIAS): $(OUT)
-	cp -f $(OUT) $(OUT_ALIAS)
-	@echo "[layer1-hide] copied to $(OUT_ALIAS)"
+	@echo "[layer1-hide] built $@ with Clang"
 
 clean:
-	rm -f $(OUT) $(OUT_ALIAS) src/*.o src/*.ko
+	rm -f $(OUT) src/*.o src/*.ko
 	@echo "[layer1-hide] cleaned"
 
 .PHONY: all clean
